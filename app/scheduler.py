@@ -67,7 +67,7 @@ async def run_guard_sweep() -> None:
                 member_id=item.member_id
             ).join(Cycle, Cycle.pot_id == ReservedAccount.pot_id).filter(Cycle.id == item.cycle_id).first()
             if account:
-                contribution = record_sweep_contribution(
+                contribution = await record_sweep_contribution(
                     db,
                     account_reference=account.account_reference,
                     monnify_tx_ref=item.monnify_tx_ref,
