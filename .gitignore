@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+.env
+*.db
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+.DS_Store
+
+# One-off debugging/diagnostic scripts — not part of the product
+diagnose_name_enquiry.py
+fix_name_and_retry.py
+real_join_test.py
+retry_payout.py
+setup_sweep_test.py
+test_full_pot_flow.py
+test_monnify_live.py
+test_set_payout_and_retry.py
+trigger_sweep_and_check.py
