@@ -57,6 +57,12 @@ async def seed(size: int, amount: float, pot_name: str, language: Language) -> N
             db, name=pot_name, admin_id=admin.id,
             size=size, amount=amount, language=language,
         )
+        # Admin is auto-seated at turn 1 by create_pot() but that alone
+        # doesn't create a Monnify account — call JOIN for the admin too;
+        # since they already hold a slot, this safely just creates the
+        # missing account without reassigning their turn (see flows.py).
+        await flows.handle_join_pot(db, member=admin, pot=pot, requested_turn=1)
+        admin_account = db.query(ReservedAccount).filter_by(pot_id=pot.id, member_id=admin.id).first()
         print(f"\nCreated pot #{pot.id}: '{pot.name}' — target {size} members, NGN{amount:,.0f}/cycle")
         print(f"Admin: {admin.name} — turn 1 (auto-assigned)\n")
 
@@ -72,13 +78,13 @@ async def seed(size: int, amount: float, pot_name: str, language: Language) -> N
         print("=" * 68)
         print(f"{'TURN':<6}{'MEMBER':<20}{'ACCOUNT NUMBER':<18}{'BANK'}")
         print("=" * 68)
-        print(f"{'1':<6}{admin.name:<20}{'(no account needed — beneficiary)':<18}")
+        print(f"{'1':<6}{admin.name:<20}{admin_account.account_number:<18}{admin_account.bank_name}")
         for turn, name, acct_num, bank in rows:
             print(f"{turn:<6}{name:<20}{acct_num:<18}{bank}")
         print("=" * 68)
 
         total_needed = amount * (size - 1)
-        print(f"\nFund EACH non-admin account above for exactly NGN{amount:,.0f} in the Monnify simulator.")
+        print(f"\nFund each account above (except this round's beneficiary, {admin.name}) for exactly NGN{amount:,.0f} in the Monnify simulator.")
         print(f"Round completes once all {size - 1} accounts are funded (NGN{total_needed:,.0f} total).")
         print(f"\nBeneficiary this round: {admin.name}")
         print("(Beneficiary needs a payout account — have them send via WhatsApp/Twilio once live:")
