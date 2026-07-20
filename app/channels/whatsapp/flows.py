@@ -258,15 +258,20 @@ async def handle_create_pot(db: Session, *, member: Member, raw_args: str) -> st
         db, name=name, admin_id=member.id, size=size, amount=amount, language=member.preferred_language
     )
 
+    # The admin is auto-seated at turn 1 but never goes through JOIN — without
+    # this, they'd have a turn but no reserved account to contribute from in
+    # future rounds. Create it here so CREATE POT and JOIN never drift apart.
+    account = await _create_reserved_account_for(db, pot=pot, member=member)
+
     return (
         f"✅ Pot created: '{pot.name}' (ID: {pot.id})\n"
         f"Target size: {size} · NGN{amount:,.0f}/cycle\n\n"
-        f"You've got turn 1. Share this so others can join:\n"
+        f"You've got turn 1. Your account: {account.account_number} ({account.bank_name})\n\n"
+        f"Share this so others can join:\n"
         f"JOIN {pot.id} <turn number>\n"
         f"Open turns: 2-{size}\n\n"
         f"When everyone's in, send START POT {pot.id} to begin."
     )
-
 
 def handle_start_pot(db: Session, *, member: Member, pot_id: int) -> str:
     try:
