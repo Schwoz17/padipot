@@ -51,7 +51,7 @@ def _cycle_is_full(db: Session, cycle: Cycle) -> bool:
     return total_contributed >= required
 
 
-def _record(
+async def _record(
     db: Session,
     *,
     account_reference: str,
@@ -99,9 +99,9 @@ def _record(
     return contribution
 
 
-def record_webhook_contribution(db: Session, *, account_reference: str, monnify_tx_ref: str, amount: float) -> Contribution | None:
-    return _record(db, account_reference=account_reference, monnify_tx_ref=monnify_tx_ref, amount=amount, source="WEBHOOK")
+async def record_webhook_contribution(db: Session, *, account_reference: str, monnify_tx_ref: str, amount: float) -> Contribution | None:
+    return await _record(db, account_reference=account_reference, monnify_tx_ref=monnify_tx_ref, amount=amount, source="WEBHOOK")
 
 
-def record_sweep_contribution(db: Session, *, account_reference: str, monnify_tx_ref: str, amount: float) -> Contribution | None:
-    return _record(db, account_reference=account_reference, monnify_tx_ref=monnify_tx_ref, amount=amount, source="SWEEP")
+async def record_sweep_contribution(db: Session, *, account_reference: str, monnify_tx_ref: str, amount: float) -> Contribution | None:
+    return await _record(db, account_reference=account_reference, monnify_tx_ref=monnify_tx_ref, amount=amount, source="SWEEP")
