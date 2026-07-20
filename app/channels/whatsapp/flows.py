@@ -20,6 +20,33 @@ def _lang(member: Member) -> str:
     return member.preferred_language.value if member.preferred_language else "en"
 
 
+async def _create_reserved_account_for(db: Session, *, pot: Pot, member: Member) -> ReservedAccount:
+    """
+    Creates (or fetches, if it already exists) the Monnify reserved account
+    for one member's contributions to one pot, and saves the local record.
+    Used by both CREATE POT (for the admin, who never goes through JOIN)
+    and JOIN (for everyone else) — one place, so neither path can drift
+    out of sync with the other again.
+    """
+    account_ref = f"padipot-{pot.id}-{member.id}"
+    result = await monnify_client.get_or_create_reserved_account(
+        account_reference=account_ref,
+        account_name=f"PadiPot - {member.name}",
+        customer_email=f"{member.phone}@padipot.ng",
+        customer_name=member.name,
+    )
+    account = ReservedAccount(
+        pot_id=pot.id,
+        member_id=member.id,
+        account_reference=result.account_reference,
+        account_number=result.account_number,
+        bank_name=result.bank_name,
+    )
+    db.add(account)
+    db.commit()
+    return account
+
+
 async def handle_join_pot(
     db: Session, *, member: Member, pot: Pot, requested_turn: int | None = None
 ) -> str:
@@ -38,47 +65,40 @@ async def handle_join_pot(
     if pot_service.pot_has_started(db, pot.id):
         return f"'{pot.name}' has already started — membership is closed. Ask the admin about the next pot."
 
-    already_in = db.query(Slot).filter_by(pot_id=pot.id, member_id=member.id).first()
-    if already_in:
-        return f"You're already in '{pot.name}' — turn {already_in.position + 1}."
+    already_in_slot = db.query(Slot).filter_by(pot_id=pot.id, member_id=member.id).first()
+    existing_account = db.query(ReservedAccount).filter_by(pot_id=pot.id, member_id=member.id).first()
 
-    if requested_turn is not None:
-        try:
-            rotation.assign_chosen_slot(db, pot_id=pot.id, member_id=member.id, requested_turn=requested_turn)
-        except ValueError as exc:
-            open_turns = rotation.available_turns(db, pot.id)
-            turns_text = ", ".join(map(str, open_turns)) if open_turns else "none — pot is full"
-            return f"{exc} Available turns: {turns_text}"
-    else:
-        rotation.assign_new_member_slot(db, pot_id=pot.id, member_id=member.id)
-
-    account_ref = f"padipot-{pot.id}-{member.id}"
-    result = await monnify_client.get_or_create_reserved_account(
-        account_reference=account_ref,
-        account_name=f"PadiPot - {member.name}",
-        customer_email=f"{member.phone}@padipot.ng",
-        customer_name=member.name,
-    )
-    db.add(
-        ReservedAccount(
-            pot_id=pot.id,
-            member_id=member.id,
-            account_reference=result.account_reference,
-            account_number=result.account_number,
-            bank_name=result.bank_name,
+    if already_in_slot and existing_account:
+        return (
+            f"You're already in '{pot.name}' — turn {already_in_slot.position + 1}.\n"
+            f"Your account: {existing_account.account_number} ({existing_account.bank_name})"
         )
-    )
-    db.commit()
+
+    if not already_in_slot:
+        # A genuinely new member — assign a turn first.
+        if requested_turn is not None:
+            try:
+                rotation.assign_chosen_slot(db, pot_id=pot.id, member_id=member.id, requested_turn=requested_turn)
+            except ValueError as exc:
+                open_turns = rotation.available_turns(db, pot.id)
+                turns_text = ", ".join(map(str, open_turns)) if open_turns else "none — pot is full"
+                return f"{exc} Available turns: {turns_text}"
+        else:
+            rotation.assign_new_member_slot(db, pot_id=pot.id, member_id=member.id)
+    # else: already has a slot (e.g. the admin, auto-seated at creation) but
+    # is missing their account — fall through and just create the account,
+    # without touching their existing turn.
+
+    account = await _create_reserved_account_for(db, pot=pot, member=member)
 
     return i18n.t(
         "account_created",
         _lang(member),
         pot_name=pot.name,
-        account_number=result.account_number,
-        bank_name=result.bank_name,
+        account_number=account.account_number,
+        bank_name=account.bank_name,
         deadline=f"every {pot.cadence_days} days",
     )
-
 
 def handle_status(db: Session, *, member: Member, pot: Pot) -> str:
     cycle = db.query(Cycle).filter_by(pot_id=pot.id, state="OPEN").order_by(Cycle.round_no.desc()).first()
