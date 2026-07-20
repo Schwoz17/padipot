@@ -18,9 +18,13 @@ Sandbox setup (fastest path to a working demo number):
 """
 from __future__ import annotations
 
+import logging
+
 from twilio.rest import Client
 
 from app.config import settings
+
+logger = logging.getLogger("padipot.twilio")
 
 
 class TwilioWhatsAppClient:
@@ -46,11 +50,13 @@ class TwilioWhatsAppClient:
         rest of the app (which is async throughout) has one consistent
         interface with the Meta client in client.py.
         """
+        logger.info("Sending WhatsApp message to %s via Twilio (from=%s)", to_phone, self._from)
         message = self._get_client().messages.create(
             from_=self._from,
             to=f"whatsapp:{to_phone}",
             body=body,
         )
+        logger.info("Twilio accepted message to %s: sid=%s status=%s", to_phone, message.sid, message.status)
         return {"sid": message.sid, "status": message.status}
 
     async def broadcast(self, phones: list[str], body: str) -> None:
@@ -58,6 +64,7 @@ class TwilioWhatsAppClient:
             try:
                 await self.send_text(phone, body)
             except Exception:  # noqa: BLE001 — one member's delivery failure must not block the rest
+                logger.exception("Failed to send WhatsApp message to %s via Twilio", phone)
                 continue
 
 
