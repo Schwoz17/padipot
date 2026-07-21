@@ -43,6 +43,10 @@ async def dispatch_command(db: Session, member: Member, text: str) -> str:
     if command == "MY POTS":
         return flows.handle_my_pots(db, member=member)
 
+    if command.startswith("SET NAME"):
+        raw_args = stripped[len("SET NAME"):]
+        return flows.handle_set_name(db, member=member, raw_args=raw_args)
+
     if command.startswith("SET PAYOUT"):
         raw_args = stripped[len("SET PAYOUT"):]
         return await flows.handle_set_payout(db, member=member, raw_args=raw_args)
