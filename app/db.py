@@ -9,8 +9,22 @@ class Base(DeclarativeBase):
     pass
 
 
-connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
-engine = create_engine(settings.database_url, connect_args=connect_args)
+def _normalize_database_url(url: str) -> str:
+    """
+    Render (and some other hosts) hand out Postgres URLs starting with
+    'postgres://', which SQLAlchemy 2.x no longer accepts — it requires
+    the explicit 'postgresql://' scheme. Normalizing here means pasting
+    Render's connection string straight into DATABASE_URL just works,
+    no manual edit needed.
+    """
+    if url.startswith("postgres://"):
+        return url.replace("postgres://", "postgresql://", 1)
+    return url
+
+
+_database_url = _normalize_database_url(settings.database_url)
+connect_args = {"check_same_thread": False} if _database_url.startswith("sqlite") else {}
+engine = create_engine(_database_url, connect_args=connect_args)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
