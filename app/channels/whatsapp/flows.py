@@ -32,7 +32,7 @@ async def _create_reserved_account_for(db: Session, *, pot: Pot, member: Member)
     result = await monnify_client.get_or_create_reserved_account(
         account_reference=account_ref,
         account_name=f"PadiPot - {member.name}",
-        customer_email=f"{member.phone}@padipot.ng",
+        customer_email=f"{account_ref}@padipot.ng",
         customer_name=member.name,
     )
     account = ReservedAccount(
