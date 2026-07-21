@@ -319,6 +319,59 @@ def handle_my_pots(db: Session, *, member: Member) -> str:
 
     return "Your pots:\n" + "\n".join(lines)
 
+async def handle_add_member(
+    db: Session, *, member: Member, pot_id: int, phone: str, turn: int, name: str
+) -> str:
+    """
+    'ADD MEMBER <pot id> <turn number> <phone number> <name>' — admin only.
+
+    Answers the real accessibility gap: CREATE POT and JOIN both require
+    someone to already be messaging the bot themselves. This lets an admin
+    add a member who has never touched WhatsApp — the actual answer to
+    "how does a feature-phone user with no WhatsApp get into a pot at all?"
+
+    Important limitation, stated plainly rather than hidden: WhatsApp only
+    allows free-form messages to someone within 24 hours of THEIR last
+    message to the bot. A member added this way won't receive contribution
+    or payout notifications until they send the bot one message themselves
+    (even just "hi") to open that window. This is a WhatsApp platform rule,
+    not a bug — USSD status checks and SMS notifications aren't affected.
+    """
+    pot = db.get(Pot, pot_id)
+    if pot is None:
+        return f"No pot found with ID {pot_id}."
+    if pot.admin_id != member.id:
+        return "Only the pot admin can add a member directly."
+    if pot_service.pot_has_started(db, pot.id):
+        return f"'{pot.name}' has already started — membership is closed."
+
+    new_member = db.query(Member).filter_by(phone=phone).first()
+    if new_member is None:
+        new_member = Member(phone=phone, name=name)
+        db.add(new_member)
+        db.commit()
+
+    already_in_slot = db.query(Slot).filter_by(pot_id=pot.id, member_id=new_member.id).first()
+    if already_in_slot:
+        return f"{new_member.name} is already in '{pot.name}' — turn {already_in_slot.position + 1}."
+
+    try:
+        rotation.assign_chosen_slot(db, pot_id=pot.id, member_id=new_member.id, requested_turn=turn)
+    except ValueError as exc:
+        open_turns = rotation.available_turns(db, pot.id)
+        turns_text = ", ".join(map(str, open_turns)) if open_turns else "none — pot is full"
+        return f"{exc} Available turns: {turns_text}"
+
+    account = await _create_reserved_account_for(db, pot=pot, member=new_member)
+
+    return (
+        f"✅ Added {new_member.name} to '{pot.name}' — turn {turn}.\n"
+        f"Their account: {account.account_number} ({account.bank_name})\n\n"
+        f"Note: {new_member.name} won't get WhatsApp notifications until they "
+        f"message the bot themselves (e.g. 'hi') — a WhatsApp platform rule, "
+        f"not a bug. USSD/SMS aren't affected."
+    )
+
 
 COMMAND_TABLE = {
     "STATUS": handle_status,
