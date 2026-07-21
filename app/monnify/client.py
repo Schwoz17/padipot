@@ -26,6 +26,7 @@ our side — belt and suspenders.
 """
 from __future__ import annotations
 
+import logging
 import base64
 import time
 from dataclasses import dataclass
@@ -34,7 +35,7 @@ from typing import Any
 import httpx
 
 from app.config import settings
-
+logger = logging.getLogger("padipot.monnify")
 
 class MonnifyError(Exception):
     """Raised for any non-successful Monnify API response."""
@@ -98,9 +99,13 @@ class MonnifyClient:
             resp = await client.request(method, path, headers=headers, **kwargs)
         body = resp.json()
         if not body.get("requestSuccessful"):
+            logger.error(
+                "Monnify request failed: %s %s | responseCode=%s | responseMessage=%s | full body=%s",
+                method, path, body.get("responseCode"), body.get("responseMessage"), body,
+            )
             raise MonnifyError(f"Monnify request failed: {method} {path}", body)
         return body["responseBody"]
-
+      
     # ---------------------------------------------------------- reserved accounts
     def _parse_reserved_account_response(self, body: dict, fallback_account_name: str) -> ReservedAccountResult:
         accounts = body.get("accounts", [])
