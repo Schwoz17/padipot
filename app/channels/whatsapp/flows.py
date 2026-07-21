@@ -372,6 +372,31 @@ async def handle_add_member(
         f"not a bug. USSD/SMS aren't affected."
     )
 
+def handle_set_name(db: Session, *, member: Member, raw_args: str) -> str:
+    """
+    'SET NAME <full name>' — lets a member correct their own stored name.
+
+    Member.name is only ever set once, automatically, from a person's
+    WhatsApp display name the first time they message the bot — which is
+    often a nickname or handle, not their real name. Since payout pre-flight
+    compares Member.name against the real bank-account holder's name
+    (via Monnify name enquiry), a nickname will legitimately fail that
+    check even when the payout account itself is genuinely theirs. This
+    command is the fix: it lets a member set their real name once, so
+    future SET PAYOUT checks actually have something correct to compare against.
+    """
+    new_name = raw_args.strip()
+    if not new_name:
+        return "To set your name, send: SET NAME <your full name>\nExample: SET NAME Ngozi Okafor"
+    if len(new_name) < 2:
+        return "That name looks too short — send your full name."
+
+    old_name = member.name
+    member.name = new_name
+    db.commit()
+
+    return f"✅ Name updated: '{old_name}' → '{new_name}'. This is what payout checks will now compare against."
+
 
 COMMAND_TABLE = {
     "STATUS": handle_status,
