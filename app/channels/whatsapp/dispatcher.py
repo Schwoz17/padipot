@@ -57,6 +57,13 @@ async def dispatch_command(db: Session, member: Member, text: str) -> str:
             return "To start a pot, send: START POT <pot id>"
         return flows.handle_start_pot(db, member=member, pot_id=int(tokens[0]))
 
+    if command.startswith("ADD MEMBER"):
+        tokens = stripped[len("ADD MEMBER"):].strip().split(maxsplit=3)
+        if len(tokens) != 4 or not tokens[0].isdigit() or not tokens[1].isdigit():
+            return "To add a member, send: ADD MEMBER <pot id> <turn number> <phone number> <name>"
+        pot_id, turn, phone, name = int(tokens[0]), int(tokens[1]), tokens[2], tokens[3]
+        return await flows.handle_add_member(db, member=member, pot_id=pot_id, phone=phone, turn=turn, name=name)
+
     if command.startswith("JOIN"):
         tokens = stripped[len("JOIN"):].split()
         if len(tokens) != 2 or not all(t.isdigit() for t in tokens):
