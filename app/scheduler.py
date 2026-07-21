@@ -1,99 +1,114 @@
 """
-Transport-agnostic WhatsApp command dispatch.
-
-Both the Meta Cloud API webhook (webhook.py) and the Twilio webhook
-(twilio_webhook.py) parse their own inbound payload shape, then call into
-this module with just (db, phone, text, display_name). Neither transport
-duplicates member lookup, pot resolution, or command routing — that logic
-lives here exactly once.
+Background jobs:
+  - guard sweep: every GUARD_SWEEP_INTERVAL_SECONDS, checks all OPEN cycles
+    against Monnify directly, in case a webhook never arrived. This is the
+    job behind the demo's "kill a webhook, watch it self-heal" moment.
+  - reminders: every REMINDER_CHECK_INTERVAL_SECONDS, nudges members who
+    haven't funded their account as a cycle's deadline approaches.
 """
 from __future__ import annotations
 
-from sqlalchemy.orm import Session
+import logging
 
-from app.models import Member, Pot, Slot
-from app.channels.whatsapp import flows
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from app.config import settings
+from app.db import session_scope
+from app.models import Cycle, CycleState, ReservedAccount, Contribution, Pot
+from app.guard.sweep import sweep_open_cycles
+from app.guard.ports import OpenCycleRef
+from app.engine.reconciler import record_sweep_contribution, _SqlLedgerAdapter  # noqa: F401 (adapter reused)
+from app.engine.payout import run_payout_for_cycle
+from app.monnify.client import monnify_client
 
-def resolve_active_pot(db: Session, member: Member) -> Pot | None:
-    # TODO(multi-pot): if a member has multiple active pots, prompt to choose.
-    # Demo scope assumes one active pot per member.
-    slot = db.query(Slot).filter_by(member_id=member.id).order_by(Slot.id.desc()).first()
-    if slot is None:
-        return None
-    return db.get(Pot, slot.pot_id)
-
-
-def get_or_create_member(db: Session, phone: str, display_name: str = "") -> Member:
-    member = db.query(Member).filter_by(phone=phone).first()
-    if member is None:
-        member = Member(phone=phone, name=display_name or phone)
-        db.add(member)
-        db.commit()
-    return member
+logger = logging.getLogger("padipot.scheduler")
 
 
-async def dispatch_command(db: Session, member: Member, text: str) -> str:
-    stripped = text.strip()
-    command = stripped.upper()
+class _MonnifyQueryAdapter:
+    async def get_reserved_account_transactions(self, account_reference: str) -> list[dict]:
+        return await monnify_client.get_reserved_account_transactions(account_reference)
 
-    if command == "/MYRECORD":
-        return flows.handle_my_record(db, member=member)
+    async def validate_bank_account(self, account_number: str, bank_code: str) -> dict:
+        return await monnify_client.validate_bank_account(account_number, bank_code)
 
-    if command == "MY POTS":
-        return flows.handle_my_pots(db, member=member)
 
-    if command.startswith("SET PAYOUT"):
-        raw_args = stripped[len("SET PAYOUT"):]
-        return await flows.handle_set_payout(db, member=member, raw_args=raw_args)
+async def run_guard_sweep() -> None:
+    with session_scope() as db:
+        open_cycles = db.query(Cycle).filter_by(state=CycleState.OPEN).all()
 
-    if command.startswith("CREATE POT"):
-        raw_args = stripped[len("CREATE POT"):]
-        return await flows.handle_create_pot(db, member=member, raw_args=raw_args)
+        refs: list[OpenCycleRef] = []
+        for cycle in open_cycles:
+            accounts = db.query(ReservedAccount).filter_by(pot_id=cycle.pot_id).all()
+            pot = db.get(Pot, cycle.pot_id)
+            for account in accounts:
+                already_paid = (
+                    db.query(Contribution)
+                    .filter_by(cycle_id=cycle.id, member_id=account.member_id)
+                    .first()
+                )
+                if already_paid:
+                    continue
+                refs.append(
+                    OpenCycleRef(
+                        cycle_id=cycle.id,
+                        account_reference=account.account_reference,
+                        member_id=account.member_id,
+                        expected_amount=float(pot.amount),
+                    )
+                )
 
-    if command.startswith("START POT"):
-        tokens = stripped[len("START POT"):].split()
-        if len(tokens) != 1 or not tokens[0].isdigit():
-            return "To start a pot, send: START POT <pot id>"
-        return flows.handle_start_pot(db, member=member, pot_id=int(tokens[0]))
+        from app.engine.reconciler import _SqlLedgerAdapter as LedgerAdapter
+        ledger = LedgerAdapter(db)
+        found = await sweep_open_cycles(refs, ledger, _MonnifyQueryAdapter())
 
-    if command.startswith("ADD MEMBER"):
-        tokens = stripped[len("ADD MEMBER"):].strip().split(maxsplit=3)
-        if len(tokens) != 4 or not tokens[0].isdigit() or not tokens[1].isdigit():
-            return "To add a member, send: ADD MEMBER <pot id> <turn number> <phone number> <name>"
-        pot_id, turn, phone, name = int(tokens[0]), int(tokens[1]), tokens[2], tokens[3]
-        return await flows.handle_add_member(db, member=member, pot_id=pot_id, phone=phone, turn=turn, name=name)
+        newly_funded_cycle_ids: set[int] = set()
+        for item in found:
+            account = db.query(ReservedAccount).filter_by(
+                member_id=item.member_id
+            ).join(Cycle, Cycle.pot_id == ReservedAccount.pot_id).filter(Cycle.id == item.cycle_id).first()
+            if account:
+                contribution = await record_sweep_contribution(
+                    db,
+                    account_reference=account.account_reference,
+                    monnify_tx_ref=item.monnify_tx_ref,
+                    amount=item.amount,
+                )
+                if contribution is not None:
+                    newly_funded_cycle_ids.add(item.cycle_id)
 
-    if command.startswith("JOIN"):
-        tokens = stripped[len("JOIN"):].split()
-        if len(tokens) != 2 or not all(t.isdigit() for t in tokens):
-            return "To join a pot, send: JOIN <pot id> <turn number>"
-        pot_id, turn = int(tokens[0]), int(tokens[1])
-        pot = db.get(Pot, pot_id)
-        if pot is None:
-            return f"No pot found with ID {pot_id}."
-        return await flows.handle_join_pot(db, member=member, pot=pot, requested_turn=turn)
+        if found:
+            logger.info("Guard sweep recovered %d missing contribution(s)", len(found))
 
-    if command.startswith("LEAVE"):
-        tokens = stripped[len("LEAVE"):].split()
-        if len(tokens) != 1 or not tokens[0].isdigit():
-            return "To leave a pot, send: LEAVE <pot id>"
-        return flows.handle_leave_pot(db, member=member, pot_id=int(tokens[0]))
+        # Same behavior as the webhook path (app/monnify/router.py): a
+        # contribution that completes a round should trigger a payout
+        # attempt immediately, regardless of whether the webhook or the
+        # sweep was what caught it. Wallet-balance placeholder matches the
+        # webhook path's current TODO (wire up the real balance endpoint).
+        for cycle_id in newly_funded_cycle_ids:
+            cycle = db.get(Cycle, cycle_id)
+            if cycle is not None and cycle.state == CycleState.FUNDED:
+                result = await run_payout_for_cycle(db, cycle_id, wallet_balance=float("inf"))
+                logger.info("Sweep-triggered payout for cycle %d: %s", cycle_id, result)
 
-    pot = resolve_active_pot(db, member)
-    if pot is None:
-        return flows.unrecognized(member)
 
-    handler = flows.COMMAND_TABLE.get(command)
-    if handler is None:
-        return flows.unrecognized(member)
+async def run_reminder_check() -> None:
+    """Placeholder hook for deadline-approaching nudges — wire into WhatsApp/SMS senders."""
+    logger.debug("Reminder check tick — extend with actual due-soon queries as needed")
 
-    if handler is flows.handle_status:
-        return handler(db, member=member, pot=pot)
-    if handler is flows.handle_order:
-        return handler(db, pot=pot)
-    if handler is flows.handle_ledger:
-        return handler(db, pot=pot)
-    if handler is flows.handle_my_account:
-        return handler(db, member=member, pot=pot)
-    return flows.unrecognized(member)
+
+def start_scheduler() -> AsyncIOScheduler:
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(
+        run_guard_sweep,
+        "interval",
+        seconds=settings.guard_sweep_interval_seconds,
+        id="guard_sweep",
+    )
+    scheduler.add_job(
+        run_reminder_check,
+        "interval",
+        seconds=settings.reminder_check_interval_seconds,
+        id="reminder_check",
+    )
+    scheduler.start()
+    return scheduler
