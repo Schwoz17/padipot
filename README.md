@@ -9,7 +9,7 @@ the Defaulter Registry, Padi Record, and the WhatsApp/USSD/SMS channel layer.
 
 **Status: proven live end-to-end against the real Monnify sandbox.** A pot has
 been created, joined, started, funded, and fully paid out through this exact
-codebase — not a simulation. 39/39 tests passing, CI green on every push
+codebase — not a simulation. 46/46 tests passing, CI green on every push
 (see the Actions tab).
 
 ## Quick start
@@ -94,12 +94,22 @@ SMS  (Africa's Talk.)─┘        │             ├─ Monnify Disbursements
 |---|---|---|
 | `CREATE POT <name> \| <target size> \| <amount>` | Anyone | Creates a pot, creator gets turn 1 |
 | `JOIN <pot id> <turn number>` | Anyone | Self-selects an open turn during formation — see Earned Rotation below |
+| `ADD MEMBER <pot id> <turn> <phone> <name>` | Admin only | Adds someone who has never messaged the bot — see accessibility note below |
 | `START POT <pot id>` | Admin only | Locks membership to whoever actually joined, opens round 1 |
 | `LEAVE <pot id>` | Any member | Pre-start only — frees the turn for someone else |
 | `MY POTS` | Anyone | Lists pots you administer, with status |
 | `SET PAYOUT <account number> <bank name>` | Any member | Registers where your payout goes — validated live via Monnify name enquiry before saving |
 | `STATUS` / `ORDER` / `LEDGER` / `MY ACCOUNT` | Pot member | Round progress, turn order, contribution history, your reserved account |
 | `/myrecord` | Anyone | Shareable savings statement (PadiScore, streak, history) |
+
+**On `ADD MEMBER` and WhatsApp's 24-hour rule:** WhatsApp only allows
+free-form messages to someone within 24 hours of *their* last message to
+the bot. A member added via `ADD MEMBER` (rather than joining themselves)
+won't receive contribution/payout notifications until they message the bot
+once (even just "hi"). This is a platform rule, not a bug — USSD status
+checks and SMS notifications aren't affected. `ADD MEMBER` is the real
+answer to "how does a feature-phone user with no WhatsApp get into a pot
+at all?" — an admin who does have WhatsApp adds them directly.
 
 ## Design principles carried through the code
 
@@ -145,15 +155,23 @@ is also fully wired in as an alternative — both share all command logic throug
 ## Demo script
 
 1. `python scripts/demo_seed.py --size 3` — creates a real pot with real Monnify accounts
-2. Fund each printed account for the exact amount, via the Monnify sandbox simulator
+2. `ADD MEMBER <pot id> <turn> <phone> <name>` — show a member being added who has
+   never touched WhatsApp themselves; call out the accessibility story explicitly
+3. Fund each printed account for the exact amount, via the Monnify sandbox simulator
    (Developer → Simulators) or a real bank transfer
-3. Watch the webhook fire in real time — contribution recorded, cycle flips to `FUNDED`
-4. Kill the webhook deliberately (stop `uvicorn` before funding) — the scheduler's
-   guard sweep self-heals the missing contribution on its next tick
-   (`GUARD_SWEEP_INTERVAL_SECONDS`, default 120s)
-5. Beneficiary sends `SET PAYOUT <account> <bank>` — validated live before saving
-6. Pot completes → pre-flight passes → disbursement fires → cycle closes `PAID`
-7. `/myrecord` renders the Padi Record; USSD shows the same data on a feature phone
+4. Watch the webhook fire in real time — contribution recorded, cycle flips to `FUNDED`
+5. **The self-heal moment** — break the webhook on Monnify's side, not your server:
+   - Monnify dashboard → Developer → Webhook URLs → temporarily set Transaction
+     Completion to an invalid URL → fund an account → nothing happens (webhook
+     has nowhere to land)
+   - Restore the correct webhook URL
+   - The scheduler's guard sweep catches the missed contribution on its next tick
+     (`GUARD_SWEEP_INTERVAL_SECONDS`, default 120s — consider lowering to ~20s in
+     Render's environment variables just for judging day, then setting it back
+     afterward, so the self-heal doesn't require dead air on stage)
+6. Beneficiary sends `SET PAYOUT <account> <bank>` — validated live before saving
+7. Pot completes → pre-flight passes → disbursement fires → cycle closes `PAID`
+8. `/myrecord` renders the Padi Record; USSD shows the same data on a feature phone
 
 This exact sequence has been run successfully against the live Monnify sandbox.
 
