@@ -18,11 +18,17 @@ Reply strategy: like the Meta transport, this sends the reply via an
 outbound REST call (twilio_client.send_text) rather than returning TwiML,
 so both transports share one "process then send" shape in dispatcher.py.
 
-The command itself (dispatch_command) has already committed to the database
-by the time we try to send the reply — so a delivery failure here (rate
-limit, network blip, whatever) must never crash this endpoint. A crash
-means a 500 back to Twilio, and Twilio retries failed webhooks, which would
-re-run dispatch_command a second time for the same inbound message.
+Two separate failure points are guarded here, deliberately:
+  1. dispatch_command() itself can raise (e.g. a Monnify API call inside a
+     command handler fails) — without a guard here, the member gets total
+     silence and Twilio gets a 500, which triggers a retry storm re-running
+     the same command again. Caught below, with a plain-language reply so
+     the member at least knows something went wrong rather than wondering
+     if their message even arrived.
+  2. Sending the reply can itself fail (rate limit, network blip) even
+     when the command succeeded — guarded separately, since in that case
+     the command's database changes already committed and must not be
+     treated as a failure.
 """
 from __future__ import annotations
 
@@ -62,9 +68,16 @@ async def receive(
 
     phone = _strip_whatsapp_prefix(From)
 
-    with session_scope() as db:
-        member = get_or_create_member(db, phone, ProfileName)
-        reply = await dispatch_command(db, member, Body)
+    try:
+        with session_scope() as db:
+            member = get_or_create_member(db, phone, ProfileName)
+            reply = await dispatch_command(db, member, Body)
+    except Exception:  # noqa: BLE001 — a crashed command must still produce a reply, not silence
+        logger.exception("dispatch_command crashed for %s — Body=%r", phone, Body)
+        reply = (
+            "Something went wrong processing that — our team has been notified. "
+            "Please try again in a moment."
+        )
 
     try:
         await twilio_whatsapp_client.send_text(phone, reply)
